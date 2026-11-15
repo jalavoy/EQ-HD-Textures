@@ -56,3 +56,13 @@ def test_measured_speed_needs_enough_history(tmp_path):
     s.record("b.s3d", entry(pixels=3_000_000, seconds=50.0))
     rate, n = st.seconds_per_megapixel(s)
     assert n == 2 and abs(rate - 15.0) < 1e-9
+
+
+def test_measured_speed_ignores_mostly_reused_archives(tmp_path):
+    s = st.State(tmp_path / "state.json")
+    index = {f"t{i}": "sha" for i in range(10)}
+    s.record("a.s3d", entry(pixels=3_000_000, seconds=30.0, textures=10, textures_index=index))
+    # 1 of 10 textures upscaled, 9 re-used: its time was mostly reading and repacking
+    s.record("b.s3d", entry(pixels=300_000, seconds=40.0, textures=1, textures_index=index))
+    rate, n = st.seconds_per_megapixel(s)
+    assert n == 1 and abs(rate - 10.0) < 1e-9

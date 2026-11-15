@@ -6,9 +6,10 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+from .osutil import is_wsl
 
 _DRIVE = re.compile(r"^([A-Za-z]):(?:[\\/]|$)")
 _WSL_UNC = re.compile(r"^[\\/]{2}wsl(?:\$|\.localhost)[\\/][^\\/]+(?:[\\/](.*))?$", re.IGNORECASE)
@@ -16,15 +17,6 @@ _WSL_UNC = re.compile(r"^[\\/]{2}wsl(?:\$|\.localhost)[\\/][^\\/]+(?:[\\/](.*))?
 
 class PathError(ValueError):
     pass
-
-
-def is_wsl() -> bool:
-    if sys.platform != "linux":
-        return False
-    try:
-        return "microsoft" in Path("/proc/version").read_text().lower()
-    except OSError:
-        return False
 
 
 def to_local_path(raw: str) -> Path:
@@ -106,3 +98,35 @@ def default_output_dir() -> Path:
 
 def repo_dir() -> Path:
     return default_output_dir().parent
+
+
+# Where EverQuest usually lives, newest launcher first.
+KNOWN_EQ_DIRS = [
+    r"C:\Users\Public\Daybreak Game Company\Installed Games\EverQuest",
+    r"C:\EverQuest",
+    r"C:\Program Files (x86)\Sony\EverQuest",
+    r"C:\Program Files\Sony\EverQuest",
+]
+
+
+def candidate_eq_dirs() -> list[Path]:
+    """Known install locations that exist and look like an EverQuest install."""
+    found = []
+    for raw in KNOWN_EQ_DIRS:
+        try:
+            path = find_eq_install(raw).path
+        except PathError:
+            continue
+        if path not in found:
+            found.append(path)
+    return found
+
+
+def default_cache_dir(os_name: str | None = None, environ: dict | None = None) -> Path:
+    """Where the GUI keeps rendered archives, downloads and the engine:
+    %LOCALAPPDATA%\\eq-hd on Windows, $XDG_DATA_HOME/eq-hd (~/.local/share) elsewhere."""
+    os_name = os_name or os.name
+    environ = os.environ if environ is None else environ
+    if os_name == "nt":
+        return Path(environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "eq-hd"
+    return Path(environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "eq-hd"

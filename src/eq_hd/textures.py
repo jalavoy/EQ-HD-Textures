@@ -56,8 +56,13 @@ def parse_bmp8(data: bytes) -> TextureInfo | None:
     return TextureInfo("BMP8", w, abs(h))
 
 
+def is_texture_name(name: str) -> bool:
+    """A file in an archive that should hold a texture (palette.bmp is a colour table)."""
+    return name.lower().endswith((".bmp", ".dds")) and name.lower() != "palette.bmp"
+
+
 def identify(name: str, data: bytes) -> TextureInfo | None:
-    if not name.lower().endswith((".bmp", ".dds")) or name.lower() == "palette.bmp":
+    if not is_texture_name(name):
         return None
     return parse_dds(data) or parse_bmp8(data)
 

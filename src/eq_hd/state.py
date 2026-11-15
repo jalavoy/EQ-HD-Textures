@@ -32,7 +32,7 @@ class Entry:
     source_sha256: str
     source_size: int
     settings_key: str
-    result: str                     # "upscaled", "nothing" (no eligible textures) or "error"
+    result: str                     # "upscaled", "nothing" (no eligible textures), "damaged" or "error"
     output_sha256: str | None = None
     output_size: int | None = None
     outputs_seen: list[str] = field(default_factory=list)
@@ -41,6 +41,8 @@ class Entry:
     seconds: float = 0.0
     error: str | None = None
     updated: str = ""
+    # eligible textures in the source: name -> sha256 of the original bytes (for re-use)
+    textures_index: dict[str, str] = field(default_factory=dict)
 
 
 class State:
@@ -102,9 +104,15 @@ def classify(name: str, sha: str, entry: Entry | None, key: str, output_file: Pa
     return CURRENT
 
 
+MOSTLY_UPSCALED = 0.75
+
+
 def seconds_per_megapixel(state: "State") -> tuple[float, int] | None:
     """Measured speed from earlier runs: (seconds per source megapixel, archives it's based on)."""
-    done = [e for e in state.archives.values() if e.result == "upscaled" and e.pixels > 0 and e.seconds > 0]
+    # Only archives that were mostly upscaled: one whose textures were mostly re-used spent its
+    # time reading and repacking, which would make the few pixels it upscaled look slow.
+    done = [e for e in state.archives.values() if e.result == "upscaled" and e.pixels > 0 and e.seconds > 0
+            and (not e.textures_index or e.textures >= MOSTLY_UPSCALED * len(e.textures_index))]
     pixels = sum(e.pixels for e in done)
     if pixels < 2_000_000:  # too little history to be meaningful
         return None

@@ -70,3 +70,18 @@ def test_output_may_not_overlap_the_eq_directory(tmp_path):
     with pytest.raises(paths.PathError):
         paths.check_output_dir(tmp_path, eq)
     assert paths.check_output_dir(tmp_path / "out", eq) == (tmp_path / "out").resolve()
+
+
+def test_candidate_eq_dirs_filters_invalid(tmp_path, monkeypatch):
+    (tmp_path / "good").mkdir()
+    good = fake_eq(tmp_path / "good")
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    monkeypatch.setattr(paths, "KNOWN_EQ_DIRS", [str(bad), str(tmp_path / "missing"), str(good)])
+    assert paths.candidate_eq_dirs() == [good]
+
+
+def test_default_cache_dir(tmp_path):
+    assert paths.default_cache_dir("nt", {"LOCALAPPDATA": str(tmp_path)}) == tmp_path / "eq-hd"
+    assert paths.default_cache_dir("posix", {"XDG_DATA_HOME": str(tmp_path / "xdg")}) == tmp_path / "xdg" / "eq-hd"
+    assert paths.default_cache_dir("posix", {}) == Path.home() / ".local" / "share" / "eq-hd"

@@ -18,8 +18,9 @@ def pattern(w: int, h: int, seed: int = 0) -> np.ndarray:
     return np.clip(base + rng.integers(-20, 20, (h, w, 3)), 0, 255).astype(np.uint8)
 
 
-def make_dds(w: int, h: int, fmt: str = "DXT1", mips: bool = False, alpha: np.ndarray | None = None) -> bytes:
-    rgba = np.dstack([pattern(w, h), alpha if alpha is not None else np.full((h, w), 255, np.uint8)])
+def make_dds(w: int, h: int, fmt: str = "DXT1", mips: bool = False, alpha: np.ndarray | None = None,
+             seed: int = 0) -> bytes:
+    rgba = np.dstack([pattern(w, h, seed), alpha if alpha is not None else np.full((h, w), 255, np.uint8)])
     buf = io.BytesIO()
     Image.fromarray(rgba, "RGBA").save(buf, format="DDS", pixel_format=fmt)
     data = buf.getvalue()
@@ -52,11 +53,14 @@ class FakeUpscaler:
     scale = 4
     name = "fake x4"
 
+    images = 0  # across all instances: how many images went through any FakeUpscaler
+
     def __init__(self, *args, **kwargs):
         self.calls = 0
 
     def upscale_many(self, images, pad_mode="wrap", on_progress=None):
         self.calls += 1
+        FakeUpscaler.images += len(images)
         assert pad_mode in ("wrap", "reflect")
         for im in images:  # one "batch" per image, like the real one on small textures
             if on_progress:

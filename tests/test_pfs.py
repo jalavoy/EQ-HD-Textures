@@ -49,3 +49,21 @@ def test_marker_only_when_asked():
     assert pfs.has_marker(pfs.write(a, marker=True))
     assert not pfs.has_marker(pfs.write(a))
     assert pfs.read(pfs.write(a, marker=True)).files == a.files
+
+
+def test_reader_gets_single_files_like_read(tmp_path):
+    from .helpers import make_archive
+    files = {"a.wld": b"w" * 20000, "B.dds": bytes(range(256)) * 100, "empty.txt": b""}
+    path = tmp_path / "x.s3d"
+    path.write_bytes(make_archive(files))
+    r = pfs.Reader(path)
+    for name, data in pfs.read(path.read_bytes()).files.items():
+        assert r.get(name) == data
+    assert r.get("missing.dds") is None
+
+
+def test_reader_rejects_damaged_archives(tmp_path):
+    path = tmp_path / "x.s3d"
+    path.write_bytes(b"\x10\x00\x00\x00PFS \x00\x00\x02\x00")
+    with pytest.raises(pfs.PfsError):
+        pfs.Reader(path)

@@ -1,5 +1,6 @@
 """End-to-end runs of the CLI against a fake EQ install, with a fake upscaler."""
 
+import json
 import shutil
 
 import pytest
@@ -55,12 +56,13 @@ def test_patched_archive_is_redone_and_installed_output_is_not(setup, capsys):
     assert "[1/1] gequip.s3d" in log
 
 
-def test_stale_installed_output_is_blocked_not_reupscaled(setup, capsys):
+def test_stale_installed_output_is_blocked_not_reupscaled(setup, capsys, monkeypatch):
     eq, out, run = setup
     run()
     shutil.copy(out / "s3d" / "zone.s3d", eq / "zone.s3d")
     capsys.readouterr()
-    assert run("--max-size", "256") == 0  # new settings
+    monkeypatch.setattr(cli, "PIPELINE_VERSION", "a newer version")  # new settings
+    assert run() == 0
     log = capsys.readouterr().out
     assert "installed, stale" in log
     assert "zone.s3d" not in [l.split("] ")[-1].split(":")[0] for l in log.splitlines() if "] " in l]
@@ -120,3 +122,85 @@ def test_needs_yes_when_not_interactive(setup, monkeypatch, capsys):
     assert code == 2
     assert "--yes" in capsys.readouterr().err
 
+
+
+def events_of(text):
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def test_events_mode_emits_plan_phases_and_result(setup, capsys):
+    eq, out, run = setup
+    assert run("--events") == 0
+    events = events_of(capsys.readouterr().out)  # every stdout line must be JSON
+    kinds = [e["kind"] for e in events]
+    assert "plan" in kinds and events[-1] == {"kind": "result", "code": 0, "errors": 0}
+    subs = [e["sub"] for e in events if e["kind"] == "phase" and e.get("archive") == "zone.s3d"]
+    assert list(dict.fromkeys(subs)) == ["reading", "reusing", "decoding", "upscaling", "encoding", "repacking"]
+
+
+def test_events_dry_run_emits_plan_without_yes(setup, capsys):
+    eq, out, _ = setup
+    code = cli.main(["--eq-directory", str(eq), "--output", str(out), "--model", str(out.parent / "model.pth"),
+                     "--device", "cpu", "--events", "--dry-run"])
+    assert code == 0
+    plans = [e for e in events_of(capsys.readouterr().out) if e["kind"] == "plan"]
+    assert len(plans) == 1 and plans[0]["to_render"] == 2 and plans[0]["to_copy"] == 0
+
+
+def test_events_mode_reports_fatal_errors_as_events(tmp_path, capsys):
+    code = cli.main(["--eq-directory", str(tmp_path), "--events", "--dry-run"])
+    events = events_of(capsys.readouterr().out)
+    assert code == 2 and events[-2]["kind"] == "error" and events[-1]["kind"] == "result"
+
+
+def damaged_archive() -> bytes:
+    """Like eye_chr.s3d as shipped: the name table lists a file the directory doesn't have."""
+    import struct
+    raw = bytearray(pfs.write(pfs.Archive({"eye.dds": make_dds(32, 32), "eye_chr.wld": b"w"})))
+    dir_off = struct.unpack_from("<I", raw, 0)[0]
+    n = struct.unpack_from("<I", raw, dir_off)[0]
+    entries = [raw[dir_off + 4 + i * 12: dir_off + 16 + i * 12] for i in range(n)]
+    entries = [e for e in entries if struct.unpack_from("<I", e)[0] != pfs.name_crc("eye_chr.wld")]
+    return bytes(raw[:dir_off]) + struct.pack("<I", len(entries)) + b"".join(entries) + b"STEVE\0\0\0\0"
+
+
+def test_damaged_archive_is_skipped_quietly_not_an_error(setup, capsys):
+    eq, out, run = setup
+    (eq / "eye_chr.s3d").write_bytes(damaged_archive())
+    assert run() == 0
+    text = capsys.readouterr().out
+    assert "ERROR" not in text
+    assert "skipping eye_chr.s3d: damaged in the EverQuest install" in text
+    assert not (out / "s3d" / "eye_chr.s3d").exists()
+    assert run() == 0
+    assert "nothing to do" in capsys.readouterr().out  # not retried every run
+
+
+def test_events_mode_stops_on_stdin_stop(setup, capsys, monkeypatch):
+    import io
+    eq, out, run = setup
+    monkeypatch.setattr("sys.stdin", io.StringIO("stop\n"))
+    assert run("--events") == 130
+    events = events_of(capsys.readouterr().out)
+    assert events[-1]["kind"] == "result" and events[-1]["code"] == 130
+    assert any(e["kind"] == "log" and e["message"] == "stopped: the window asked to stop" for e in events)
+    assert "stopped: the window asked to stop" in (out / "run.log").read_text()
+    assert not list((out / "s3d").glob("*.tmp"))
+
+
+def test_events_stream_keeps_other_stdout_writes_out_of_the_events(tmp_path):
+    import subprocess
+    import sys
+    script = (
+        "import os, sys\n"
+        "from eq_hd import cli\n"
+        "events, restore = cli.events_stream()\n"
+        "events.write('{\"kind\": \"log\"}\\n')\n"
+        "os.write(1, b'C-level noise\\n')\n"                       # e.g. a CUDA library
+        "import subprocess; subprocess.run([sys.executable, '-c', 'print(\"child noise\")'])\n"  # a worker
+        "restore()\n"
+        "print('after restore')\n")
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ['{"kind": "log"}', "after restore"]
+    assert "C-level noise" in r.stderr and "child noise" in r.stderr

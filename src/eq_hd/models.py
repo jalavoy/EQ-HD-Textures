@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from .osutil import sha256_file
 
 
 @dataclass(frozen=True)
@@ -29,14 +30,6 @@ class ModelError(RuntimeError):
     pass
 
 
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
 def download(spec: ModelSpec, dest: Path, log) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
@@ -45,9 +38,7 @@ def download(spec: ModelSpec, dest: Path, log) -> None:
     h = hashlib.sha256()
     with urllib.request.urlopen(req, timeout=60) as resp, part.open("wb") as f:
         size = resp.headers.get("Content-Length")
-        bar = log.task("downloading", int(size) if size else None, in_bytes=True) \
-            if hasattr(log, "task") else contextlib.nullcontext(lambda n=1: None)
-        with bar as advance:
+        with log.task("download", int(size) if size else None, "bytes") as advance:
             for block in iter(lambda: resp.read(1 << 20), b""):
                 h.update(block)
                 f.write(block)

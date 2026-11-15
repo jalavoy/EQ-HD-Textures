@@ -22,6 +22,9 @@ from __future__ import annotations
 import struct
 import zlib
 from dataclasses import dataclass, field
+from typing import Callable
+
+Progress = Callable[[int, int], None]  # (bytes done, bytes total)
 
 MAGIC = b"PFS "
 VERSION = 0x20000
@@ -93,7 +96,67 @@ def _deflate(data: bytes, level: int) -> bytes:
     return bytes(out)
 
 
-def read(buf: bytes) -> Archive:
+def _names(nbuf: bytes) -> list[str]:
+    (ncount,) = struct.unpack_from("<I", nbuf, 0)
+    names, p = [], 4
+    for _ in range(ncount):
+        (ln,) = struct.unpack_from("<I", nbuf, p)
+        names.append(nbuf[p + 4:p + 4 + ln].rstrip(b"\0").decode("latin-1"))
+        p += 4 + ln
+    return names
+
+
+class Reader:
+    """Single files of an archive on disk, without reading or inflating the rest:
+    the directory is read once, then each get() reads only that file's blocks.
+    (Re-using one texture from a 100 MB upscaled archive shouldn't inflate all of it.)"""
+
+    def __init__(self, path):
+        self.path = path
+        try:
+            with open(path, "rb") as f:
+                dir_off, magic, _version = struct.unpack("<I4sI", f.read(12))
+                if magic != MAGIC:
+                    raise PfsError("not a PFS archive")
+                f.seek(dir_off)
+                (count,) = struct.unpack("<I", f.read(4))
+                raw = f.read(count * 12)
+                entries = [struct.unpack_from("<III", raw, i * 12) for i in range(count)]
+                names_entry = next((e for e in entries if e[0] in NAMES_CRCS), None)
+                if names_entry is None:
+                    raise PfsError("no filename table")
+                names = _names(self._inflate_at(f, names_entry[1], names_entry[2]))
+        except struct.error as e:
+            raise PfsError(f"truncated archive: {e}") from None
+        data_entries = sorted((e for e in entries if e is not names_entry), key=lambda e: e[1])
+        if len(data_entries) != len(names):
+            raise PfsError(f"{len(data_entries)} entries but {len(names)} names")
+        self.entries = {name: (off, size) for name, (_crc, off, size) in zip(names, data_entries)}
+
+    @staticmethod
+    def _inflate_at(f, off: int, size: int) -> bytes:
+        f.seek(off)
+        out = bytearray()
+        while len(out) < size:
+            dlen, ilen = struct.unpack("<II", f.read(8))
+            chunk = zlib.decompress(f.read(dlen))
+            if len(chunk) != ilen:
+                raise PfsError(f"block inflated to {len(chunk)} bytes, expected {ilen}")
+            out += chunk
+        return bytes(out)
+
+    def get(self, name: str) -> bytes | None:
+        where = self.entries.get(name)
+        if where is None:
+            return None
+        try:
+            with open(self.path, "rb") as f:
+                return self._inflate_at(f, *where)
+        except struct.error as e:
+            raise PfsError(f"truncated archive: {e}") from None
+
+
+def read(buf: bytes, progress: Progress | None = None) -> Archive:
     if len(buf) < 12:
         raise PfsError("too small to be a PFS archive")
     dir_off, magic, _version = struct.unpack_from("<I4sI", buf, 0)
@@ -108,26 +171,24 @@ def read(buf: bytes) -> Archive:
     names_entry = next((e for e in entries if e[0] in NAMES_CRCS), None)
     if names_entry is None:
         raise PfsError("no filename table")
-    nbuf = _inflate(buf, names_entry[1], names_entry[2])
-    (ncount,) = struct.unpack_from("<I", nbuf, 0)
-    names, p = [], 4
-    for _ in range(ncount):
-        (ln,) = struct.unpack_from("<I", nbuf, p)
-        names.append(nbuf[p + 4:p + 4 + ln].rstrip(b"\0").decode("latin-1"))
-        p += 4 + ln
+    names = _names(_inflate(buf, names_entry[1], names_entry[2]))
 
     data_entries = sorted((e for e in entries if e is not names_entry), key=lambda e: e[1])
     if len(data_entries) != len(names):
         raise PfsError(f"{len(data_entries)} entries but {len(names)} names")
     files, overrides = {}, {}
+    total, done = sum(e[2] for e in data_entries), 0
     for name, (crc, off, size) in zip(names, data_entries):
         if name_crc(name) != crc:
             overrides[name] = crc
         files[name] = _inflate(buf, off, size)
+        done += size
+        if progress:
+            progress(done, total)
     return Archive(files, names_entry[0], overrides)
 
 
-def write(archive: Archive, level: int = 6, marker: bool = False) -> bytes:
+def write(archive: Archive, level: int = 6, marker: bool = False, progress: Progress | None = None) -> bytes:
     """Serialize an archive. Files are stored in dict order; names keep their case.
 
     With marker=True the footer carries MARKER, identifying eq-hd output.
@@ -135,11 +196,15 @@ def write(archive: Archive, level: int = 6, marker: bool = False) -> bytes:
     body = bytearray()
     entries = []
     names = list(archive.files)
+    total, done = sum(len(d) for d in archive.files.values()), 0
     for name in names:
         data = archive.files[name]
         crc = archive.crc_overrides.get(name, name_crc(name))
         entries.append((crc, 12 + len(body), len(data)))
         body += _deflate(data, level)
+        done += len(data)
+        if progress:
+            progress(done, total)
 
     nbuf = bytearray(struct.pack("<I", len(names)))
     for name in names:

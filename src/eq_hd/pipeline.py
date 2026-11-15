@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Executor
+import hashlib
+from concurrent.futures import Executor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -12,6 +13,9 @@ from . import pfs, textures
 from .textures import TextureInfo
 
 CHUNK = 48  # textures per GPU call; bounds memory on big character archives
+
+
+ProgressFn = Callable[[str, int, int, "tuple[int, int] | None"], None]
 
 
 class UpscalerLike(Protocol):
@@ -33,6 +37,8 @@ class Result:
     pixels: int = 0  # source pixels of the upscaled textures; the GPU time scales with this
     skipped: dict[str, int] = field(default_factory=lambda: {"too_small": 0, "too_large": 0, "unsupported": 0})
     pad_mode: str | None = None
+    reused: int = 0  # eligible textures taken from earlier outputs instead of upscaled
+    index: dict[str, str] = field(default_factory=dict)  # every eligible texture: name -> sha256 of its original bytes
 
 
 def is_tiling_archive(name: str) -> bool:
@@ -44,7 +50,7 @@ def is_tiling_archive(name: str) -> bool:
 def select(archive: pfs.Archive, limits: Limits) -> tuple[list[tuple[str, TextureInfo]], dict[str, int]]:
     todo, skipped = [], {"too_small": 0, "too_large": 0, "unsupported": 0}
     for name, data in archive.files.items():
-        if not name.lower().endswith((".bmp", ".dds")) or name.lower() == "palette.bmp":
+        if not textures.is_texture_name(name):
             continue
         info = textures.identify(name, data)
         if info is None:
@@ -60,27 +66,65 @@ def select(archive: pfs.Archive, limits: Limits) -> tuple[list[tuple[str, Textur
     return todo, skipped
 
 
-def count_eligible(buf: bytes, limits: Limits) -> tuple[int, int]:
-    """(textures, source pixels) that process() would upscale."""
-    todo = select(pfs.read(buf), limits)[0]
-    return len(todo), sum(i.width * i.height for _, i in todo)
+def texture_sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def count_eligible(buf: bytes, limits: Limits) -> list[tuple[str, str, int]]:
+    """(name, sha256 of the original bytes, source pixels) for every texture
+    process() would upscale or re-use."""
+    archive = pfs.read(buf)
+    return [(name, texture_sha(archive.files[name]), info.width * info.height)
+            for name, info in select(archive, limits)[0]]
 
 
 def process(buf: bytes, archive_name: str, upscaler: UpscalerLike, limits: Limits, pool: Executor,
-            progress: Callable[[int, int, int, int], None] | None = None) -> tuple[bytes | None, Result]:
+            progress: "ProgressFn | None" = None,
+            checkpoint: Callable[[], None] | None = None,
+            reuse: Callable[[str], bytes | None] | None = None) -> tuple[bytes | None, Result]:
     """Return (new archive bytes, or None if nothing was eligible; result details).
 
-    progress(textures_done, textures_total, pixels_done, pixels_total) is called
-    after every GPU batch; pixels are source pixels, the better measure of work.
+    progress(phase, done, total, textures) reports, in order:
+      "reading"    bytes extracted from the archive
+      "reusing"    textures looked up in earlier outputs (only when reuse is given)
+      "decoding"   textures of the first batch decoded to pixels (later batches
+                   decode while the GPU works, so they need no phase of their own)
+      "upscaling"  source pixels through the model, after every GPU batch;
+                   textures = (textures done, textures total)
+      "encoding"   textures re-encoded to DDS/BMP
+      "repacking"  bytes compressed into the new archive
+    textures is None except while upscaling.
+
+    checkpoint() is called before reading, after every GPU batch and before
+    repacking; it may block (pause) or raise KeyboardInterrupt (stop).
+
+    reuse(sha) may return the already upscaled bytes for an original texture
+    with that sha256 (from an earlier output with the same settings); those
+    textures skip decoding, upscaling and encoding. Result.upscaled/pixels count
+    only what actually went through the model.
     """
-    archive = pfs.read(buf)
-    todo, skipped = select(archive, limits)
-    result = Result(len(todo), sum(i.width * i.height for _, i in todo), skipped)
-    if not todo:
-        return None, result
+    report = progress or (lambda *a: None)
+    check = checkpoint or (lambda: None)
+    check()
+    archive = pfs.read(buf, lambda d, t: report("reading", d, t, None))
+    eligible, skipped = select(archive, limits)
+    if not eligible:
+        return None, Result(skipped=skipped)
+    files = archive.files
+    index = {name: texture_sha(files[name]) for name, _ in eligible}
+    todo, reused = [], {}
+    for k, (name, info) in enumerate(eligible, 1):
+        cached = reuse(index[name]) if reuse else None
+        if cached is not None:
+            reused[name] = cached
+        else:
+            todo.append((name, info))
+        if reuse:
+            report("reusing", k, len(eligible), None)
+    result = Result(len(todo), sum(i.width * i.height for _, i in todo), skipped,
+                    reused=len(reused), index=index)
     pad_mode = "wrap" if is_tiling_archive(archive_name) else "reflect"
     result.pad_mode = pad_mode
-    files = archive.files
 
     def load(item):
         name, info = item
@@ -99,17 +143,24 @@ def process(buf: bytes, archive_name: str, upscaler: UpscalerLike, limits: Limit
     def on_progress(px, images):
         done["px"] += px
         done["tex"] += images
-        if progress:
-            progress(done["tex"], len(todo), done["px"], result.pixels)
+        report("upscaling", done["px"], result.pixels, (done["tex"], len(todo)))
+        check()
 
-    pending, next_load = [], [pool.submit(load, t) for t in chunks[0]]
+    pending, next_load = [], [pool.submit(load, t) for t in chunks[0]] if chunks else []
     for ci, chunk in enumerate(chunks):
+        if ci == 0:
+            for k, _ in enumerate(as_completed(next_load), 1):
+                report("decoding", k, len(next_load), None)
+            report("upscaling", 0, result.pixels, (0, len(todo)))
         loaded = [f.result() for f in next_load]
         if ci + 1 < len(chunks):
             next_load = [pool.submit(load, t) for t in chunks[ci + 1]]
         ups = upscaler.upscale_many([l[1] for l in loaded], pad_mode=pad_mode, on_progress=on_progress)
         pending += [pool.submit(finish, t, l, u) for t, l, u in zip(chunk, loaded, ups)]
-    for f in pending:
+    for k, f in enumerate(pending, 1):
         name, data = f.result()
         files[name] = data
-    return pfs.write(archive, marker=True), result
+        report("encoding", k, len(pending), None)
+    files.update(reused)
+    check()
+    return pfs.write(archive, marker=True, progress=lambda d, t: report("repacking", d, t, None)), result

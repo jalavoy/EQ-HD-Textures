@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import typing
+import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 from spandrel import ImageModelDescriptor, ModelLoader
+
+# Raised once from inside Spandrel's DAT architecture about a future PyTorch
+# change; harmless and not actionable here.
+warnings.filterwarnings("ignore", message=r"torch\.meshgrid: in an upcoming release", category=UserWarning)
+
+
+def autocast_type(device: str) -> str:
+    """torch.autocast takes a device type ("cuda"), not a device ("cuda:1")."""
+    return torch.device(device).type
 
 
 class Upscaler:
@@ -67,7 +77,7 @@ class Upscaler:
                 chunk = jobs[k:k + n]
                 batch = torch.stack([padded[i][:, y:y + th + 2 * pad, x:x + tw + 2 * pad]
                                      for i, y, x, th, tw, pad in chunk]).to(self.device).to(weight_dtype) / 255.0
-                with torch.autocast(self.device, dtype=torch.bfloat16, enabled=autocast):
+                with torch.autocast(autocast_type(self.device), dtype=torch.bfloat16, enabled=autocast):
                     res = self.model(batch)
                 res = (res.float().clamp(0, 1) * 255.0).round().to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
                 for r, (i, y, x, th, tw, pad) in zip(res, chunk):
