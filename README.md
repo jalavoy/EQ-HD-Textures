@@ -22,11 +22,11 @@ and WSL or if you prefer a terminal.
 
 ## Before and after
 
-![Erudin: the entrance stairs and fountain, before and after](screenshots/erudin.jpg)
+![Stone carving in the Greater Faydark, before and after](screenshots/spires.jpg)
 
-![The Nexus: a carved pillar and brazier, before and after](screenshots/nexus.jpg)
+![Ivy over earth, before and after](screenshots/vines.jpg)
 
-![A character's face and robe, before and after](screenshots/character.jpg)
+![Rock in the Nexus, before and after](screenshots/nexus.jpg)
 
 *In-game screenshots from the live client, before and after Install. EverQuest
 and its art © Daybreak Game Company.*
