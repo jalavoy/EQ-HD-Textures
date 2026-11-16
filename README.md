@@ -20,6 +20,17 @@ and WSL or if you prefer a terminal.
 > service. That's why everyone renders their own, on their own PC, from their
 > own copy of the game. Share the tool instead.
 
+## Before and after
+
+![Erudin: the entrance stairs and fountain, before and after](screenshots/erudin.jpg)
+
+![The Nexus: a carved pillar and brazier, before and after](screenshots/nexus.jpg)
+
+![A character's face and robe, before and after](screenshots/character.jpg)
+
+*In-game screenshots from the live client, before and after Install. EverQuest
+and its art © Daybreak Game Company.*
+
 ## What you need
 
 - An NVIDIA graphics card (CUDA) with an up-to-date driver. A full install is
