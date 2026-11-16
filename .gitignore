@@ -1,7 +1,52 @@
+# Rendered output and scratch: large, local, never pushed.
 output/
 work/
+*.tmp
+*.part
+
+# The downloaded model (fetched and checked against a pinned sha256 on first use).
 models/*.pth
-models/*.part
+
+# Python environments (uv recreates them from uv.lock).
 .venv/
+.venv-gui/
+
+# Build results: `make windows` (the zip, its staging folder, the download cache)
+# and Zig's caches from building the launcher.
+build/
+dist/
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Python and tool caches.
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Logs (run.log lives in output/; this catches stray ones).
+*.log
+
+# Claude Code: per-plan work notes and personal settings.
+.superpowers/
+.claude/settings.local.json
+
+# Secrets, if any ever appear.
+.env
+.env.*
+
+# Editors and operating systems.
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Design notes and plans from working sessions (kept locally, not published).
+docs/
