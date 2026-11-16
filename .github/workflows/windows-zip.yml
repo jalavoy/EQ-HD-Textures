@@ -1,0 +1,105 @@
+# Builds the Windows download (eq-hd-textures-<version>-windows.zip) on Linux and
+# checks it on a real Windows machine. On a version tag (vX.Y.Z, matching
+# pyproject.toml) it then waits twice for a person to approve:
+#   1. environment "prerelease": publishes a GitHub pre-release with the zip;
+#   2. environment "release":    turns that pre-release into the latest release.
+# Both environments need "Required reviewers" set in the repo's Settings →
+# Environments, or the jobs run without waiting.
+name: Windows zip
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.6"
+      - run: uv sync --frozen --no-default-groups --group dev
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: uv run --no-sync python tools/build_windows.py --version-tag "$TAG" --dry-check
+      - run: uv run --no-sync python tools/build_windows.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist/*.zip
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: dist
+      - name: Extract to a folder with a space and check it starts
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist\*.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath "$env:RUNNER_TEMP\eq hd test"
+          $top = "$env:RUNNER_TEMP\eq hd test\EQ HD Textures"
+          & "$top\runtime\python\python.exe" -c "import eq_hd.gui.app, PySide6; from eq_hd import paths; from eq_hd.gui import setup_env; assert paths.repo_dir().name == 'app'; assert setup_env.bundled_uv() is not None; print('ok')"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$top\runtime\uv.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $p = Start-Process -FilePath "$top\EQ HD Textures.exe" -ArgumentList "--check" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "launcher --check exited $($p.ExitCode)" }
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.6"
+      - name: Window tests (no PyTorch needed)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          uv sync --frozen --no-default-groups --group gui --group dev
+          uv run --no-sync pytest tests/gui -q
+
+  prerelease:
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment: prerelease  # gate 1: waits for approval
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: dist/*.zip
+          body: |
+            Download the zip, extract it (right-click → Extract All), and run `EQ HD Textures.exe`.
+            The app isn't signed: the first time, Windows may say "Windows protected your PC" — click
+            "More info", then "Run anyway". README.txt inside the zip explains the rest, including how to remove it.
+
+            Please don't share the upscaled textures the app makes: they're derived from Daybreak's
+            copyrighted game files. Share the app instead.
+
+  release:
+    needs: prerelease
+    runs-on: ubuntu-latest
+    environment: release  # gate 2: waits for approval again
+    permissions:
+      contents: write
+    steps:
+      - name: Promote the pre-release to the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
