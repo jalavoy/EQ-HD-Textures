@@ -36,4 +36,4 @@ All four items below are done (2026-11-14). See README.md for how each works.
 - [ ] Deferred minors from the reviews: two app copies rebuilding one engine env; Stop enabled during a
       delete; folder-size thread can stick on "calculating"; failed texture counts are cached; duplicate
       names in a PFS archive; case-sensitive output-inside-EQ check under WSL; corrupt state.json gives a
-      raw error; Actions not pinned to SHAs.
+      raw error.
