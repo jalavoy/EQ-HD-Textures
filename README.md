@@ -13,12 +13,21 @@ Most people should use **the Windows app** below: download, extract, click
 Render, then Install. A [command line](#command-line) is there too, for Linux
 and WSL or if you prefer a terminal.
 
-> **Please don't share the upscaled textures.** They're made from EverQuest's
+> Using these textures on Live likely breaks the EULA/TOS. Use at your own risk.
+
+> **Do not share the upscaled textures.** They're made from EverQuest's
 > game files, which are copyrighted by Daybreak Game Company. Uploading,
 > sharing or selling them, or any pack, mod or archive that contains them,
 > would infringe Daybreak's copyright and may also break EverQuest's terms of
 > service. That's why everyone renders their own, on their own PC, from their
 > own copy of the game. Share the tool instead.
+
+## Performance penalty
+There is a performance penalty by using these textures. Loading takes a few
+seconds longer, each instance of EQ will use more VRAM, and there's a bit
+of an FPS drop when you first enter a zone while the textures get drawn 
+for the first time. In my experience, this FPS drop only lasts a few seconds, 
+and it helps to "look around" to hurry it up it.
 
 ## Before and after
 
